@@ -1,0 +1,518 @@
+     1                                  ;-----------------------------------------------------------------------------------------------------------------------
+     2                                  ;
+     3                                  ;	File:		mbr.asm
+     4                                  ;
+     5                                  ;   Tools and Information Which has used:
+     6                                  ;   http://en.wikipedia.org/wiki/Master_boot_record
+     7                                  ;   https://codereview.stackexchange.com/questions/94220/the-loaderless-bootloader
+     8                                  ;   http://www.hex-rays.com/idapro/
+     9                                  ;   https://github.com/qb40/hexit?files=1
+    10                                  ;   http://www.sevyn.com/pro_os_001.html
+    11                                  ;   https://en.wikibooks.org/wiki/First_steps_towards_system_programming_under_MS-DOS_7/Appendix
+    12                                  ;   https://countuponsecurity.com/2017/07/02/analysis-of-a-master-boot-record-eternalpetya/
+    13                                  ;   https://wiki.osdev.org/Memory_Map_(x86)
+    14                                  ;   https://www.gonwan.com/2013/10/17/bios-boot-sequence/
+    15                                  ;   http://samuelkerr.com/?p=262
+    16                                  ;
+    17                                  ;	Description:	This program is QNX 2.21 BootLoader.
+    18                                  ;
+    19                                  ;			a valid boot sector is defined with code to load the operating system kernel
+    20                                  ;			program from the disk image.
+    21                                  ;
+    22                                  ;			This source can assemble into a single boot-sector or an entire floppy disk image file. To
+    23                                  ;			output the disk image file, include the line "%define BUILDDISK" at the top of the file or
+    24                                  ;			include -DBUILDDISK in the NASM command line.
+    25                                  ;
+    26                                  ;	Revised:	February 05, 2020
+    27                                  ;
+    28                                  ;	Assembly:	nasm mbr.asm -f bin -o mbr.flp -l mbr.lst -DBUILDDISK
+    29                                  ;
+    30                                  ;			Copyright (C) 2020 Ehsan Ghasemlou. All Rights Reserved.
+    31                                  ;
+    32                                  ;-----------------------------------------------------------------------------------------------------------------------
+    33                                  ;0000h - 01B7h       Code Area (440 bytes)
+    34                                  ;01B8h - 01BBh       Disk Signature (4 bytes)
+    35                                  ;01BCh - 01BDh       Generally Zeroed out (2 bytes)
+    36                                  ;01BEh - 01FDh       List of Partition Records (4 * 16-byte structures)
+    37                                  ;01FEh - 01FFh       MBR Signature (2 bytes - Must be AA55h)
+    38                                  ;-----------------------------------------------------------------------------------------------------------------------
+    39                                  ;
+    40                                  ;	Equates
+    41                                  ;
+    42                                  ;	The equate (equ) statements define symbolic names for fixed values so that these values can be defined and
+    43                                  ;	verified once and then used throughout the code. Equate names are always capitalized and are the only symbolic
+    44                                  ;	names that begin with the letter E.
+    45                                  ;
+    46                                  ;-----------------------------------------------------------------------------------------------------------------------
+    47                                  ;-----------------------------------------------------------------------------------------------------------------------
+    48                                  ;
+    49                                  ;	Loader Constants
+    50                                  ;
+    51                                  ;-----------------------------------------------------------------------------------------------------------------------
+    52                                      EMAXTRIES		equ	0x5					    	;max read retries
+    53                                      EFATBUFFER		equ	0x400						;fat i/o address
+    54                                  ;-----------------------------------------------------------------------------------------------------------------------
+    55                                  ;
+    56                                  ;	BIOS Interrupts								    EBIOS...
+    57                                  ;
+    58                                  ;-----------------------------------------------------------------------------------------------------------------------
+    59                                      EBIOSINT16	    	equ	0x16					;BIOS video services interrupt
+    60                                      EBIOSTTYOUTPUTFN	equ	0x14					;BIOS video TTY output function
+    61                                      EBIOSKEYBOARDINT	equ	0x22					;BIOS keyboard services interrupt
+    62                                      EBIOSWAITFORKEYFN	equ	0x0						;BIOS keyboard wait for key function
+    63                                  ;-----------------------------------------------------------------------------------------------------------------------
+    64                                  ;
+    65                                  ;	8042 Keyboard Controller						EKEY...
+    66                                  ;
+    67                                  ;	The 8042 Keyboard Controller (8042) is a programmable controller that accepts input signals from the keyboard
+    68                                  ;	device and signals a hardware interrupt to the CPU.
+    69                                  ;
+    70                                  ;-----------------------------------------------------------------------------------------------------------------------
+    71                                      EKEYPORTSTAT		equ	0x064				    ;8042 status port
+    72                                  ;-----------------------------------------------------------------------------------------------------------------------
+    73                                  ;
+    74                                  ;	Boot Sector Code							@disk: 000000	@mem: 007C00
+    75                                  ;
+    76                                  ;	The first sector of the disk is the boot sector. The BIOS will load the boot sector into memory and pass
+    77                                  ;	control to the code at the start of the sector. The boot sector code is responsible for loading the operating
+    78                                  ;	system into memory. Our boot sector assumes only that the operating system code is referenced by a directory
+    79                                  ;	entry for a program called OS.COM. Our boot sector code will search the directory and read the file allocation
+    80                                  ;	table to locate all sectors containing OS.COM code.
+    81                                  ;
+    82                                  ;-----------------------------------------------------------------------------------------------------------------------                  
+    83                                  ;cpu	8086						                ;assume minimum CPU
+    84                                  ;section			boot	vstart=0100h	    	;emulate .COM (CS,DS,ES=PSP)
+    85                                  ;bits	16						                    ;16-bit code at power-up
+    86                                  ;Boot			jmp	word Boot.10			        ;jump over parameter table
+    87                                  ;-----------------------------------------------------------------------------------------------------------------------
+    88                                  ;	Disk Parameter Table
+    89                                  ;-----------------------------------------------------------------------------------------------------------------------
+    90                                  ;                   db	'QNX'    	    		;disk parameters label
+    91                                  ;SectorBytes		dw	512						;bytes per sector
+    92                                  ;ClusterSectors		db	1						;sectors per cluster
+    93                                  ;ReservedSectors	dw	1						;reserved sectors
+    94                                  ;FatCount		    db	2						;file allocation table copies
+    95                                  ;DirEntries		    dw	224						;max directory entries
+    96                                  ;DiskSectors		dw	2880					;sectors per disk
+    97                                  ;DiskType		    db	0f0h					;1.44MB
+    98                                  ;FatSectors		    dw	9						;sectors per FAT copy
+    99                                  ;TrackSectors		dw	18						;sectors per track
+   100                                  ;DiskSides		    dw	2						;sides per disk
+   101                                  ;SpecialSectors		dw	0						;special sectors
+   102                                  ;-----------------------------------------------------------------------------------------------------------------------
+   103                                  ;	BIOS will load this sector at absolute address 7c00. But we don't assume the contents of CS:IP because BIOS
+   104                                  ;	code varies - could be 0:7c00, 700:c00, 7c0:0, etc. First get the absolute addr in BX.
+   105                                  ;-----------------------------------------------------------------------------------------------------------------------
+   106                                  [org 0x7c00]                ; Our BootLoader will be load on 0x7c00 - 0x7e00
+   107 00000000 FA                      cli                         ; Clear interrupt flag, interrupts disabled when interrupt flag cleared.
+   108 00000001 31C0                    xor ax,ax                   ; Clear ax, we could use mov ax,0 but it has more bytes after assembeling but the same effect
+   109 00000003 8ED0                    mov ss,ax                   ; Clear ss, there is no direct way to initialaize Stack Segment register
+   110 00000005 BC007C                  mov sp,0x7c00               ; Set Stack Pointer to 07c00h, there is no guard for stack, although it is growing in different direction
+   111 00000008 89E6                    mov si, sp
+   112 0000000A 8EC0                    mov es,ax                   ; Clear Extra Segment
+   113                                  ;push ax
+   114                                  ;pop es
+   115                                  
+   116 0000000C 8ED8                    mov ds,ax                   ; Clear Data Segment
+   117                                  ;push ax
+   118                                  ;pop ds
+   119 0000000E FB                      sti                         ; Set interrupt flag; external, maskable interrupts enabled at the end of the next instruction.
+   120                                  
+   121 0000000F FC                      cld                         ; Clear DF flag.
+   122 00000010 BF0006                  mov di,0x600                ; DI register is Destination Pointer but why 0x600 ; This is the destination for the copy                                   
+   123 00000013 B90001                  mov cx,0x100                ; Why 100 byte? maybe it is copying from bios Data? ; We want to copy 200h bytes, which is the length of half sector, i.e. the whole MBR.
+   124                                                              ; mov     si, 7C00h       ; Source for the copy
+   125                                  
+   126                                  
+   127                                  
+   128                                  
+   129                                  
+   130 00000016 F2                      repne                       ; Repeats a string instruction the number of times specified in the count register ((E)CX) or until the indicated condition of the ZF flag is no longer met. (repeat while not equal),
+   131 00000017 A5                      movsw                       ; Move word at address DS:SI to address ES:DI
+   132                                  
+   133                                  ;to fix
+   134                                  ;jmp 0x0:0x601+ $
+   135 00000018 EA1D060000              jmp 0x0:0x61D             ; we will run from 0x0:0x61D which is next line 
+   136                                                              ; push    61Dh
+   137                                                              ; retf
+   138 0000001D BEBE07                  mov si,0x7BE                ; This is the offset to the first partition record. In the MBR structure, the first partition record is at base+1BEh, so it is 600h + 1BEh = 7BEh
+   139 00000020 B304                    mov bl,0x4                  ; This used for the loop. We only want to examine 4 partition records
+   140                                  
+   141                                  NextPartition:
+   142 00000022 803C80                  cmp byte [si+0x0],0x80    ; Compares the status byte to 080h
+   143 00000025 740E                    jz FoundBootableEntry                    ;
+   144 00000027 803C00                  cmp byte [si+0x0],0x0       ;
+   145 0000002A 751C                    jnz  PrintInvalidPartitionTable              ;
+   146 0000002C 83C610                  add si,0x10                 ;
+   147 0000002F FECB                    dec bl                      ;
+   148 00000031 75EF                    jnz NextPartition              ;
+   149                                  
+   150                                  ;to fix
+   151 00000033 CD18                    int 0x18                    ;ROM-BASIC (only available on
+   152                                                                            ; some IBM machines!) Many BIOS
+   153                                                                            ; simply display "PRESS A
+   154                                                                            ; KEY TO REBOOT" when an
+   155                                                                            ; Interrupt 18h is executed
+   156                                  
+   157                                  FoundBootableEntry:
+   158 00000035 8B14                    mov dx,[si+0x0]             ; Drive  -> DL /   Head -> DH
+   159                                                                            ; For the standard MBR code,
+   160                                            ; DL will always be 80h; which means ONLY the first drive can
+   161                                            ; be bootable! [ This part of the code is often changed by MBR
+   162                                            ; replacements to boot from another (second, etc.) drive! ]
+   163 00000037 8B4C02                  mov cx,[si+0x2]             ;
+   164 0000003A 89F5                    mov bp,si                   ;
+   165                                  IfNotMoreThanOneNoneZeroTestNext:
+   166 0000003C 83C610                  add si,0x10                 ;
+   167 0000003F FECB                    dec bl                      ;
+   168 00000041 742D                    jz OneActiveandThreeNonActiveRead               ;
+   169 00000043 803C00                  cmp byte [si+0x0],0x0       ;
+   170 00000046 74F4                    jz IfNotMoreThanOneNoneZeroTestNext               ;
+   171                                  PrintInvalidPartitionTable:
+   172 00000048 BE[F600]                mov si,INVALID                ;
+   173                                  PrintSiHalt:
+   174 0000004B E80200                  call PrintSi                  ;
+   175 0000004E EBFE                    jmp $              ;
+   176                                  
+   177                                  PrintSi:
+   178 00000050 51                      push cx                     ;
+   179 00000051 30ED                    xor ch,ch                   ;
+   180 00000053 AC                      lodsb                       ;Load byte at address DS:(E)SI into AL
+   181 00000054 88C1                    mov cl,al                   ;
+   182                                  NextChar:
+   183 00000056 AC                      lodsb                       ;Load byte at address DS:(E)SI into AL
+   184 00000057 E80400                  call OutCharAl                  ;
+   185 0000005A E2FA                    loop NextChar                   ;
+   186 0000005C 59                      pop cx                      ;
+   187 0000005D C3                      ret                         ;
+   188                                  
+   189                                  
+   190                                  ;--------b-100E--CXABCD-----------------------
+   191                                  ;INT 10 - V20-XT-BIOS - TELETYPE OUTPUT WITH ATTRIBUTE
+   192                                  ;	AH = 0Eh
+   193                                  ;	CX = ABCDh
+   194                                  ;	BP = ABCDh
+   195                                  ;	AL = character to write
+   196                                  ;	BH = page number
+   197                                  ;	BL = foreground color (text modes as well as graphics modes)
+   198                                  ;Return: nothing
+   199                                  ;Program: V20-XT-BIOS is a ROM BIOS replacement with extensions by Peter
+   200                                  ;	  Koehlmann / c't magazine
+   201                                  ;Desc:	display a character on the screen, advancing the cursor and scrolling
+   202                                  ;	  the screen as necessary
+   203                                  ;Notes:	characters 07h (BEL), 08h (BS), 0Ah (LF), and 0Dh (CR) are interpreted
+   204                                  ;	  and do the expected things
+   205                                  ;SeeAlso: INT 15/AH=84h"V20-XT-BIOS"
+   206                                  ;--------V-100F-------------------------------
+   207                                  
+   208                                  OutCharAl:
+   209 0000005E 50                      push ax
+   210 0000005F 53                      push bx
+   211 00000060 51                      push cx
+   212 00000061 56                      push si
+   213 00000062 55                      push bp
+   214 00000063 BB0700                  mov bx,0x07                  ; BH = Page Number, BL = Color (only in graphic mode)
+   215 00000066 B40E                    mov ah,0x0E                  ; Teletype output AH=0Eh
+   216 00000068 CD10                    int 0x010                    ; Write Character in TTY Mode -  AL = Character, 
+   217 0000006A 5D                      pop bp
+   218 0000006B 5E                      pop si
+   219 0000006C 59                      pop cx
+   220 0000006D 5B                      pop bx
+   221 0000006E 58                      pop ax
+   222 0000006F C3                      ret    
+   223                                  
+   224                                  
+   225                                  OneActiveandThreeNonActiveRead:
+   226                                  ;fix 7EE to 7BE
+   227                                  ;mov si,0x7BE                ; second partition address 0x600+0x1EE
+   228 00000070 BEEE07                  mov si,0x7EE
+   229                                  ;fix si,bp to bp,si
+   230                                  ;sub bp,si                   ; bp is 0x7BE so 0x7EE - 0x7BE = 0x30
+   231 00000073 29EE                    sub si,bp
+   232                                  ;change all si to bp
+   233                                  ;shr bp,0x1                  ;
+   234                                  ;shr bp,0x1                  ;
+   235                                  ;shr bp,0x1                  ;
+   236                                  ;shr bp,0x1                  ; can be shr si, 0x4
+   237 00000075 D1EE                    shr si,0x1                  ;
+   238 00000077 D1EE                    shr si,0x1                  ;
+   239 00000079 D1EE                    shr si,0x1                  ;
+   240 0000007B D1EE                    shr si,0x1                  ; can be shr si, 0x4
+   241 0000007D B83100                  mov ax,0x31                 ; it is the ascii code of 1 
+   242                                  ;add ax,bp                   ; after four times of shift right si should be 1 and one plus one is two
+   243 00000080 01F0                    add ax,si                   ; after four times of shift right si should be 1 and one plus one is two
+   244 00000082 A2[6401]                mov [PARNUM],al             ;
+   245 00000085 BE[4601]                mov si,LOADER                ;
+   246 00000088 E8C5FF                  call PrintSi                  ;
+   247                                  
+   248                                  ;--------B-1600-------------------------------
+   249                                  ;INT 16 - KEYBOARD - GET KEYSTROKE
+   250                                  ;	AH = 00h
+   251                                  ;Return: AH = BIOS scan code
+   252                                  ;	AL = ASCII character
+   253                                  ;Notes:	on extended keyboards, this function discards any extended keystrokes,
+   254                                  ;	  returning only when a non-extended keystroke is available
+   255                                  ;	the BIOS scan code is usually, but not always, the same as the hardware
+   256                                  ;	  scan code processed by INT 09.  It is the same for ASCII keystrokes
+   257                                  ;	  and most unshifted special keys (F-keys, arrow keys, etc.), but
+   258                                  ;	  differs for shifted special keys
+   259                                  ;	some (older) clone BIOSes do not discard extended keystrokes and manage
+   260                                  ;	  function AH=00h and AH=10h the same
+   261                                  ;	the K3PLUS v6.00+ INT 16 BIOS replacement doesn't discard extended
+   262                                  ;	  keystrokes (same as with functions 10h and 20h), but will always
+   263                                  ;	  translate prefix E0h to 00h. This allows old programs to use extended
+   264                                  ;	  keystrokes and should not cause compatibility problems
+   265                                  ;SeeAlso: AH=01h,AH=05h,AH=10h,AH=20h,AX=AF4Dh"K3PLUS",INT 18/AH=00h
+   266                                  ;SeeAlso: INT 09,INT 15/AH=4Fh
+   267                                  
+   268 0000008B B9C8AF                  mov cx,0xAFC8               ; why is that number
+   269                                  CheckTimeOut:
+   270 0000008E B401                    mov ah,0x1                  ;
+   271 00000090 55                      push bp                     ;
+   272 00000091 51                      push cx                     ;
+   273 00000092 CD16                    int EBIOSINT16                    ;
+   274 00000094 59                      pop cx                      ;
+   275 00000095 5D                      pop bp                      ;
+   276 00000096 7504                    jnz KeyPressed              ;
+   277 00000098 E2F4                    loop CheckTimeOut                   ;
+   278 0000009A EB20                    jmp Dfault              ; if after 0xAFC8 times the key was not released 
+   279                                  
+   280                                  ;--------B-1601-------------------------------
+   281                                  ;INT 16 - KEYBOARD - CHECK FOR KEYSTROKE
+   282                                  ;	AH = 01h
+   283                                  ;Return: ZF set if no keystroke available
+   284                                  ;	ZF clear if keystroke available
+   285                                  ;	    AH = BIOS scan code
+   286                                  ;	    AL = ASCII character
+   287                                  ;Note:	if a keystroke is present, it is not removed from the keyboard buffer;
+   288                                  ;	  however, any extended keystrokes which are not compatible with 83/84-
+   289                                  ;	  key keyboards are removed by IBM and most fully-compatible BIOSes in
+   290                                  ;	  the process of checking whether a non-extended keystroke is available
+   291                                  ;	some (older) clone BIOSes do not discard extended keystrokes and manage
+   292                                  ;	  function AH=00h and AH=10h the same
+   293                                  ;	the K3PLUS v6.00+ INT 16 BIOS replacement doesn't discard extended
+   294                                  ;	  keystrokes (same as with functions 10h and 20h), but will always
+   295                                  ;	  translate prefix E0h to 00h. This allows old programs to use extended
+   296                                  ;	  keystrokes and should not cause compatibility problems
+   297                                  ;SeeAlso: AH=00h,AH=11h,AH=21h,INT 18/AH=01h,INT 09,INT 15/AH=4Fh
+   298                                  
+   299                                  KeyPressed:
+   300 0000009C B400                    mov ah,0x0                  ;
+   301 0000009E CD16                    int EBIOSINT16                    ;
+   302 000000A0 3C31                    cmp al,0x31                 ;
+   303 000000A2 7218                    jb Dfault               ;
+   304 000000A4 3C34                    cmp al,0x34                 ;
+   305 000000A6 7714                    ja Dfault               ;
+   306 000000A8 E8B3FF                  call OutCharAl                  ;
+   307 000000AB 2C31                    sub al,0x31                 ;
+   308 000000AD B400                    mov ah,0x0                  ;
+   309 000000AF D1E0                    shl ax,0x1                  ;
+   310 000000B1 D1E0                    shl ax,0x1                  ;
+   311 000000B3 D1E0                    shl ax,0x1                  ;
+   312 000000B5 D1E0                    shl ax,0x1                  ;
+   313                                  ;change from 0x7EE to 0x7BE
+   314                                  ;mov bp,0x7BE                ; 600 + 1BE  = ; 1CE ; 1DE ; 1EE
+   315 000000B7 BDEE07                  mov bp,0x7EE                ; 600 + 1BE  = ; 1CE ; 1DE ; 1EE
+   316                                  ;change from sub to add
+   317                                  ;add bp,ax                   ;
+   318 000000BA 29C5                    sub bp,ax
+   319                                  Dfault:
+   320                                  
+   321                                  ;mov bp,0x7BE
+   322                                  
+   323                                  ;instead of this line i added two byte at the end of loader
+   324                                  ;mov al,0xD                  ; this line look unessesarry
+   325                                  ;call OutCharAl                  ;
+   326                                  ;mov al,0xA                  ;
+   327                                  ;call OutCharAl                  ;
+   328                                  
+   329 000000BC BF0500                  mov di,0x5                  ; what is the 5 ?
+   330 000000BF 89EE                    mov si,bp                   ;
+   331 000000C1 8B14                    mov dx,[si+0x0]             ;
+   332                                  
+   333 000000C3 B280                    mov dl,0x80                 ;why by default is 80; DL = drive number (bit 7 set for hard disk)
+   334 000000C5 8B4C02                  mov cx,[si+0x2]             ;
+   335                                  
+   336                                  
+   337                                  ;--------B-1302-------------------------------
+   338                                  ;INT 13 - DISK - READ SECTOR(S) INTO MEMORY
+   339                                  ;	AH = 02h
+   340                                  ;	AL = number of sectors to read (must be nonzero)
+   341                                  ;	CH = low eight bits of cylinder number
+   342                                  ;	CL = sector number 1-63 (bits 0-5)
+   343                                  ;	     high two bits of cylinder (bits 6-7, hard disk only)
+   344                                  ;	DH = head number
+   345                                  ;	DL = drive number (bit 7 set for hard disk)
+   346                                  ;	ES:BX -> data buffer
+   347                                  ;Return: CF set on error
+   348                                  ;	    if AH = 11h (corrected ECC error), AL = burst length
+   349                                  ;	CF clear if successful
+   350                                  ;	AH = status (see #00234)
+   351                                  ;	AL = number of sectors transferred (only valid if CF set for some
+   352                                  ;	      BIOSes)
+   353                                  ;Notes:	errors on a floppy may be due to the motor failing to spin up quickly
+   354                                  ;	  enough; the read should be retried at least three times, resetting
+   355                                  ;	  the disk with AH=00h between attempts
+   356                                  ;	most BIOSes support "multitrack" reads, where the value in AL
+   357                                  ;	  exceeds the number of sectors remaining on the track, in which
+   358                                  ;	  case any additional sectors are read beginning at sector 1 on
+   359                                  ;	  the following head in the same cylinder; the MSDOS CONFIG.SYS command
+   360                                  ;	  MULTITRACK (or the Novell DOS DEBLOCK=) can be used to force DOS to
+   361                                  ;	  split disk accesses which would wrap across a track boundary into two
+   362                                  ;	  separate calls
+   363                                  ;	the IBM AT BIOS and many other BIOSes use only the low four bits of
+   364                                  ;	  DH (head number) since the WD-1003 controller which is the standard
+   365                                  ;	  AT controller (and the controller that IDE emulates) only supports
+   366                                  ;	  16 heads
+   367                                  ;	AWARD AT BIOS and AMI 386sx BIOS have been extended to handle more
+   368                                  ;	  than 1024 cylinders by placing bits 10 and 11 of the cylinder number
+   369                                  ;	  into bits 6 and 7 of DH
+   370                                  ;	under Windows95, a volume must be locked (see INT 21/AX=440Dh/CX=084Bh)
+   371                                  ;	  in order to perform direct accesses such as INT 13h reads and writes
+   372                                  ;	all versions of MS-DOS (including MS-DOS 7 [Windows 95]) have a bug
+   373                                  ;	  which prevents booting on hard disks with 256 heads (FFh), so many
+   374                                  ;	  modern BIOSes provide mappings with at most 255 (FEh) heads
+   375                                  ;	some cache drivers flush their buffers when detecting that DOS is
+   376                                  ;	  bypassed by directly issuing INT 13h from applications.  A dummy
+   377                                  ;	  read can be used as one of several methods to force cache
+   378                                  ;	  flushing for unknown caches (e.g. before rebooting).
+   379                                  ;BUGS:	When reading from floppies, some AMI BIOSes (around 1990-1991) trash
+   380                                  ;	  the byte following the data buffer, if it is not arranged to an even
+   381                                  ;	  memory boundary.  A workaround is to either make the buffer word
+   382                                  ;	  aligned (which may also help to speed up things), or to add a dummy
+   383                                  ;	  byte after the buffer.
+   384                                  ;	MS-DOS may leave interrupts disabled on return from this function.
+   385                                  ;	Apparently some BIOSes or intercepting resident software have bugs
+   386                                  ;	  that may destroy DX on return or not properly set the Carry flag.
+   387                                  ;	  At least some Microsoft software frames calls to this function with
+   388                                  ;	  PUSH DX, STC, INT 13h, STI, POP DX.
+   389                                  ;	on the original IBM AT BIOS (1984/01/10) this function does not disable
+   390                                  ;	  interrupts for harddisks (DL >= 80h).	 On these machines the MS-DOS/
+   391                                  ;	  PC DOS IO.SYS/IBMBIO.COM installs a special filter to bypass the
+   392                                  ;	  buggy code in the ROM (see CALL F000h:211Eh)
+   393                                  ;SeeAlso: AH=03h,AH=0Ah,AH=06h"V10DISK.SYS",AH=21h"PS/1",AH=42h"IBM"
+   394                                  ;SeeAlso: INT 21/AX=440Dh/CX=084Bh,INT 4D/AH=02h
+   395                                  
+   396                                  RepeatRead:
+   397 000000C8 BB007C                  mov bx,0x7C00               ;
+   398 000000CB B80102                  mov ax,0x201                ; ah=2 al=1
+   399 000000CE 57                      push di                     ;
+   400 000000CF CD13                    int 0x13                    ;
+   401 000000D1 5F                      pop di                      ;
+   402 000000D2 730D                    jae ReadDone              ; cf=0 or zf=1
+   403                                  
+   404                                  ;--------B-1300-------------------------------
+   405                                  ;INT 13 - DISK - RESET DISK SYSTEM
+   406                                  ;	AH = 00h
+   407                                  ;	DL = drive (if bit 7 is set both hard disks and floppy disks reset)
+   408                                  ;Return: AH = status (see #00234)
+   409                                  ;	CF clear if successful (returned AH=00h)
+   410                                  ;	CF set on error
+   411                                  ;Note:	forces controller to recalibrate drive heads (seek to track 0)
+   412                                  ;	for PS/2 35SX, 35LS, 40SX and L40SX, as well as many other systems,
+   413                                  ;	  both the master drive and the slave drive respond to the Reset
+   414                                  ;	  function that is issued to either drive
+   415                                  ;SeeAlso: AH=0Dh,AH=11h,INT 21/AH=0Dh,INT 4D/AH=00h"TI Professional"
+   416                                  ;SeeAlso: INT 56"Tandy 2000",MEM 0040h:003Eh
+   417                                  
+   418 000000D4 31C0                    xor ax,ax                   ;
+   419 000000D6 CD13                    int 0x13                    ;
+   420 000000D8 4F                      dec di                      ;
+   421 000000D9 75ED                    jnz RepeatRead              ;
+   422 000000DB BE[0E01]                mov si,ERROR                ;
+   423 000000DE E96AFF                  jmp PrintSiHalt                    ;
+   424                                  
+   425                                  ReadDone:
+   426 000000E1 BE[2D01]                mov si,MISSING                ;
+   427 000000E4 813EFE7D55AA            cmp word [0x7DFE],0xAA55    ;
+   428 000000EA 7403                    jz RunVBR               ;
+   429 000000EC E95CFF                  jmp PrintSiHalt                   ;
+   430                                  
+   431                                  RunVBR:
+   432 000000EF 89EE                    mov si,bp                   ;
+   433 000000F1 EA007C0000              jmp 0x0:0x7C00              ;
+   434                                  
+   435                                  
+   436                                  
+   437                                  
+   438                                  
+   439                                  
+   440                                  
+   441                                  ; ; prints the value of DX as hex. 
+   442                                  ; print_hex:
+   443                                  ; ; TODO: manipulate chars at HEX_OUT to reflect DX
+   444                                  ; pusha
+   445                                  ; mov si,HEX_OUT
+   446                                  ; add si,0x6
+   447                                  ; mov cx,0x0
+   448                                  ; looph:
+   449                                  ; 		cmp cl,0x4
+   450                                  ; 		je endh
+   451                                  ; 				mov ax,dx
+   452                                  ; 				and ax,0x000f
+   453                                  ; 				cmp al,0x9
+   454                                  ; 				jle number
+   455                                  ; 						add al,0x57
+   456                                  ; 						jmp afteradd
+   457                                  ; number:
+   458                                  ; 						add al,0x30
+   459                                  ; afteradd:
+   460                                  ; 				mov [si],al
+   461                                  ; 				sub si,1
+   462                                  ; 				shr dx,0x4
+   463                                  ; 				add cl,0x1
+   464                                  ; 				jmp looph
+   465                                  ; endh:
+   466                                  
+   467                                  ; mov si, HEX_OUT       ; print the string pointed to 
+   468                                  ; call PrintSi; by BX ret
+   469                                  
+   470                                  ; popa
+   471                                  ; ret
+   472                                  ; ; Data 
+   473                                  ; HEX_OUT:
+   474                                  ;  db 0x6, '0x0000'
+   475                                  
+   476                                  
+   477                                  
+   478 000000F6 17496E76616C696420-     INVALID: db 0x17,"Invalid Partition Table"
+   478 000000FF 506172746974696F6E-
+   478 00000108 205461626C65       
+   479 0000010E 1E4572726F72204C6F-     ERROR: db 0x1E,"Error Loading Operation System"
+   479 00000117 6164696E67204F7065-
+   479 00000120 726174696F6E205379-
+   479 00000129 7374656D           
+   480 0000012D 184D697373696E6720-     MISSING: db 0x18, "Missing Operation System"
+   480 00000136 4F7065726174696F6E-
+   480 0000013F 2053797374656D     
+   481 00000146 20456873616E204C6F-     LOADER: db 0x20, "Ehsan Loader", 0x0D, 0x0A, "Boot Partition "
+   481 0000014F 616465720D0A426F6F-
+   481 00000158 742050617274697469-
+   481 00000161 6F6E20             
+   482 00000164 30                      PARNUM: db 0x30
+   483 00000165 0D0A                    db 0x0D, 0x0A
+   484                                  ;INVALID: db 0x1, "I"
+   485                                  ;ERROR: db 0x1, "E"
+   486                                  ;MISSING: db 0x1, "M"
+   487                                  ;LOADER: db 0x6, "Q", 0x0D, 0x0A, "B "
+   488                                  ;PARNUM: db 0x30
+   489                                  
+   490 00000167 00<rep 51h>             times 0x1B8-($-$$) db 0
+   491                                  ;times 0x1BE-($-$$) db 0
+   492 000001B8 00000000                disksignature db  0x00, 0x00, 0x00, 0x00
+   493 000001BC 0000                    mostlyzeroout db  0x0, 0x0
+   494                                  
+   495                                  ;0000h - 0000h    Status byte (80h for bootable, 00h for non-bootable, others are invalid) (1 byte)
+   496                                  ;0001h - 0003h    CHS address of first absolute sector (3 bytes)
+   497                                  ;0004h - 0004h    Partition type (1 byte)
+   498                                  ;0005h - 0007h    CHS address of last absolute sector (3 bytes)
+   499                                  ;0008h - 000Bh    LBA of first absolute sector (4 bytes)
+   500                                  ;000Ch - 000Fh    Number of sectors in partition (4 bytes)
+   501                                  
+   502 000001BE 000000000000000000-     times 0x3 db 0x00, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+   502 000001C7 00000000000000-    
+   502 000001C7 <rep 3h>           
+   503 000001EE 8001010007FE3F223F-     db 0x80, 0x01, 0x01, 0x0, 0x7, 0xfe, 0x3f, 0x22, 0x3f, 0x0, 0x0, 0x0, 0x24, 0x94, 0x08, 0x0
+   503 000001F7 00000024940800     
+   504                                  
+   505 000001FE 55AA                    dw 0xaa55 
